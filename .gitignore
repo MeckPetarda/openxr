@@ -1,0 +1,83 @@
+# Existing entries
+openxr/**
+build/**
+
+# Android Studio and IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+.gradle/
+local.properties
+
+# Android build outputs
+*/build/
+app/build/
+.cxx/
+.externalNativeBuild/
+
+# NDK
+obj/
+
+# Generated files
+bin/
+gen/
+out/
+
+# Gradle Wrapper (optional - some prefer to include these)
+# gradle/wrapper/gradle-wrapper.jar
+# gradle/wrapper/gradle-wrapper.properties
+
+# Local configuration files
+*.properties
+!gradle.properties
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!cmake/glsl_shader.cmake
+
+# Visual Studio (if used for C++ development)
+.vs/
+*.vcxproj.user
+*.vcxproj.filters
+*.sln.docstates
+
+# Temporary files
+*.tmp
+*.temp
+*~
+*.swp
+*.swo
+
+# Compiled Object files
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# APK files (unless you want to track releases)
+*.apk
+*.aab
