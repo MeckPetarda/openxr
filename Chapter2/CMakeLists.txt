@@ -43,6 +43,8 @@ set(HEADERS
         "../Common/OpenXRDebugUtils.h"
         "../Common/OpenXRHelper.h")
 
+set(GLSL_SHADERS "../Shaders/VertexShader.glsl" "../Shaders/PixelShader.glsl")
+
 add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
 add_dependencies(${PROJECT_NAME} XrApiLayer_core_validation)
 target_include_directories(
@@ -96,3 +98,32 @@ if(vulkan-lib)
         ${PROJECT_NAME} PUBLIC XR_TUTORIAL_USE_VULKAN
     )
 endif()
+
+# Vulkan GLSL
+set(SHADER_DEST "${CMAKE_CURRENT_SOURCE_DIR}/app/src/main/assets/shaders")
+include(glsl_shader)
+set_source_files_properties(
+    ../Shaders/VertexShader.glsl PROPERTIES ShaderType "vert"
+)
+set_source_files_properties(
+    ../Shaders/PixelShader.glsl PROPERTIES ShaderType "frag"
+)
+
+foreach(FILE ${GLSL_SHADERS})
+    get_filename_component(FILE_WE ${FILE} NAME_WE)
+    get_source_file_property(shadertype ${FILE} ShaderType)
+    glsl_spv_shader(
+        INPUT
+        "${CMAKE_CURRENT_SOURCE_DIR}/${FILE}"
+        OUTPUT
+        "${SHADER_DEST}/${FILE_WE}.spv"
+        STAGE
+        ${shadertype}
+        ENTRY_POINT
+        main
+        TARGET_ENV
+        vulkan1.0
+    )
+    # Make our project depend on these files
+    target_sources(${PROJECT_NAME} PRIVATE "${SHADER_DEST}/${FILE_WE}.spv")
+endforeach()
