@@ -4,6 +4,7 @@ project("${PROJECT_NAME}")
 
 # Additional Directories for find_package() to search within.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
+include("../cmake/graphics_api_select.cmake")
 
 # For FetchContent_Declare() and FetchContent_MakeAvailable()
 include(FetchContent)
@@ -43,7 +44,11 @@ set(HEADERS
         "../Common/OpenXRDebugUtils.h"
         "../Common/OpenXRHelper.h")
 
+set(HLSL_SHADERS "../Shaders/VertexShader.hlsl" "../Shaders/PixelShader.hlsl")
 set(GLSL_SHADERS "../Shaders/VertexShader.glsl" "../Shaders/PixelShader.glsl")
+set(ES_GLSL_SHADERS "../Shaders/VertexShader_GLES.glsl"
+                    "../Shaders/PixelShader_GLES.glsl"
+)
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
 add_dependencies(${PROJECT_NAME} XrApiLayer_core_validation)
@@ -53,8 +58,9 @@ target_include_directories(
         # In this repo
         ../Common/
         # From OpenXR repo
-        ../openxr/src/common
-        ../openxr/external/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/openxr/src/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/openxr/external/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/openxr/include
 )
 
 # export ANativeActivity_onCreate for java to call.
@@ -64,27 +70,13 @@ set_property(
     PROPERTY LINK_FLAGS " -u ANativeActivity_onCreate"
 )
 
-# Native app glue - Method 1: Using find_library (recommended for newer NDK)
-find_library(native_app_glue_lib native_app_glue)
-if(native_app_glue_lib)
-    target_link_libraries(${PROJECT_NAME} android ${native_app_glue_lib} openxr_loader)
-else()
-    # Method 2: Manual inclusion for older NDK versions or if find_library fails
-    if(ANDROID_NDK)
-        set(NATIVE_APP_GLUE_DIR "${ANDROID_NDK}/sources/android/native_app_glue")
-        if(EXISTS "${NATIVE_APP_GLUE_DIR}")
-            target_sources(${PROJECT_NAME} PRIVATE
-                "${NATIVE_APP_GLUE_DIR}/android_native_app_glue.c"
-            )
-            target_include_directories(${PROJECT_NAME} PRIVATE
-                "${NATIVE_APP_GLUE_DIR}"
-            )
-        endif()
-    endif()
-    target_link_libraries(${PROJECT_NAME} android log openxr_loader)
-endif()
+    # native_app_glue
+    include(AndroidNdkModules)
+    android_ndk_import_module_native_app_glue()
 
+    target_link_libraries(${PROJECT_NAME} android native_app_glue openxr_loader)
 target_compile_options(${PROJECT_NAME} PRIVATE -Wno-cast-calling-convention)
+    addgraphicsapidefine(${PROJECT_NAME})
 
 # VulkanNDK
 find_library(vulkan-lib vulkan)
@@ -98,6 +90,14 @@ if(vulkan-lib)
         ${PROJECT_NAME} PUBLIC XR_TUTORIAL_USE_VULKAN
     )
 endif()
+
+    include(../thirdparty/glwrapper/CMakeLists.txt)
+    if(TARGET tutorial_glwrapper)
+        target_link_libraries(${PROJECT_NAME} tutorial_glwrapper)
+        target_compile_definitions(
+            ${PROJECT_NAME} PUBLIC XR_TUTORIAL_USE_OPENGL_ES
+        )
+    endif()
 
 # Vulkan GLSL
 set(SHADER_DEST "${CMAKE_CURRENT_SOURCE_DIR}/app/src/main/assets/shaders")

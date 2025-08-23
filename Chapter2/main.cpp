@@ -3,6 +3,9 @@
 #include <OpenXRDebugUtils.h>
 
 class OpenXRTutorial {
+   private:
+    struct RenderLayerInfo;
+
    public:
     OpenXRTutorial(GraphicsAPI_Type apiType) : m_apiType(apiType) {
         if (!CheckGraphicsAPI_TypeIsValidForPlatform(m_apiType)) {
