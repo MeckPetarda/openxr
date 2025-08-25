@@ -81,3 +81,5 @@ Makefile
 # APK files (unless you want to track releases)
 *.apk
 *.aab
+
+thirdparty
