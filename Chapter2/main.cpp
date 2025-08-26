@@ -26,11 +26,17 @@ class OpenXRTutorial {
 
         GetInstanceProperties();
         GetSystemID();
+        CreateActionSet();
+        SuggestBindings();
 
         GetViewConfigurationViews();
         GetEnvironmentBlendModes();
 
         CreateSession();
+
+        CreateActionPoses();
+        AttachActionSet();
+
         CreateReferenceSpace();
         CreateSwapchains();
         CreateResources();
@@ -204,6 +210,128 @@ class OpenXRTutorial {
         // Get the System's properties for some general information about the hardware and the vendor.
         OPENXR_CHECK(xrGetSystemProperties(m_xrInstance, m_systemID, &m_systemProperties), "Failed to get SystemProperties.");
     }
+    XrPath CreateXrPath(const char *path_string) {
+        XrPath xrPath;
+        OPENXR_CHECK(xrStringToPath(m_xrInstance, path_string, &xrPath), "Failed to create XrPath from string.");
+        return xrPath;
+    }
+    std::string FromXrPath(XrPath path) {
+        uint32_t strl;
+        char text[XR_MAX_PATH_LENGTH];
+        XrResult res;
+        res = xrPathToString(m_xrInstance, path, XR_MAX_PATH_LENGTH, &strl, text);
+        std::string str;
+        if (res == XR_SUCCESS) {
+            str = text;
+        } else {
+            OPENXR_CHECK(res, "Failed to retrieve path.");
+        }
+        return str;
+    }
+    void CreateActionSet() {
+        XrActionSetCreateInfo actionSetCI{XR_TYPE_ACTION_SET_CREATE_INFO};
+        strncpy(actionSetCI.actionSetName, "openxr-tutorial-actionset", XR_MAX_ACTION_SET_NAME_SIZE);
+        strncpy(actionSetCI.localizedActionSetName, "OpenXR Tutorial ActionSet", XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+        actionSetCI.priority = 0;
+
+        OPENXR_CHECK(xrCreateActionSet(m_xrInstance, &actionSetCI, &m_actionSet), "Failed to create ActionSet");
+
+        auto CreateAction = [this](XrAction &xrAction, const char *name, XrActionType xrActionType,
+                                   std::vector<const char *> subaction_paths = {}) -> void {
+            XrActionCreateInfo actionCI{XR_TYPE_ACTION_CREATE_INFO};
+
+            actionCI.actionType = xrActionType;
+
+            std::vector<XrPath> subaction_xrpaths;
+            for (auto path : subaction_paths) {
+                subaction_xrpaths.push_back(CreateXrPath(path));
+            }
+
+            actionCI.countSubactionPaths = (uint32_t)subaction_xrpaths.size();
+            actionCI.subactionPaths = subaction_xrpaths.data();
+
+            strncpy(actionCI.actionName, name, XR_MAX_ACTION_NAME_SIZE);
+            strncpy(actionCI.localizedActionName, name, XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+
+            OPENXR_CHECK(xrCreateAction(m_actionSet, &actionCI, &xrAction), "Failed to create XrAction");
+        };
+
+        CreateAction(m_grabCubeAction, "grab-cube", XR_ACTION_TYPE_FLOAT_INPUT, {"/user/hand/left", "/user/hand/right"});
+        CreateAction(m_spawnCubeAction, "spawn-cube", XR_ACTION_TYPE_BOOLEAN_INPUT);
+        CreateAction(m_changeColorAction, "change-color", XR_ACTION_TYPE_BOOLEAN_INPUT, {"/user/hand/left", "/user/hand/right"});
+
+        CreateAction(m_palmPoseAction, "palm-pose", XR_ACTION_TYPE_POSE_INPUT, {"/user/hand/left", "/user/hand/right"});
+        CreateAction(m_buzzAction, "buzz", XR_ACTION_TYPE_VIBRATION_OUTPUT, {"/user/hand/left", "/user/hand/right"});
+
+        m_handPaths[0] = CreateXrPath("/user/hand/left");
+        m_handPaths[1] = CreateXrPath("/user/hand/right");
+    }
+    void SuggestBindings() {
+        // Validate instance
+        if (m_xrInstance == XR_NULL_HANDLE) {
+            XR_TUT_LOG("XrInstance is invalid!");
+            return;
+        }
+
+        // Validate actions
+        if (m_changeColorAction == XR_NULL_HANDLE || m_grabCubeAction == XR_NULL_HANDLE || m_palmPoseAction == XR_NULL_HANDLE) {
+            XR_TUT_LOG("One or more actions are invalid!");
+            return;
+        }
+
+        auto SuggestBindings = [this](const char *profile_path, std::vector<XrActionSuggestedBinding> bindings) -> bool {
+            XrInteractionProfileSuggestedBinding interactionProfileSB{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+
+            for (auto b : bindings) {
+                if (b.action == XR_NULL_HANDLE) {
+                    XR_TUT_LOG("Invalid handle for action" << b.action);
+                    return false;
+                }
+            }
+
+            interactionProfileSB.interactionProfile = CreateXrPath(profile_path);
+            interactionProfileSB.suggestedBindings = bindings.data();
+            interactionProfileSB.countSuggestedBindings = (uint32_t)bindings.size();
+
+            auto result = xrSuggestInteractionProfileBindings(m_xrInstance, &interactionProfileSB);
+            if (result == XrResult::XR_SUCCESS) {
+                return true;
+            }
+
+            XR_TUT_LOG("Failed to suggest binding with" << profile_path << result);
+            return false;
+        };
+
+        bool any_ok = false;
+        // Each Action here has two paths, one for each SubAction path.
+        any_ok |=
+            SuggestBindings("/interaction_profiles/khr/simple_controller", {{m_changeColorAction, CreateXrPath("/user/hand/left/input/select/click")},
+                                                                            {m_grabCubeAction, CreateXrPath("/user/hand/right/input/select/click")},
+                                                                            {m_spawnCubeAction, CreateXrPath("/user/hand/right/input/menu/click")},
+                                                                            {m_palmPoseAction, CreateXrPath("/user/hand/left/input/grip/pose")},
+                                                                            {m_palmPoseAction, CreateXrPath("/user/hand/right/input/grip/pose")},
+                                                                            {m_buzzAction, CreateXrPath("/user/hand/left/output/haptic")},
+                                                                            {m_buzzAction, CreateXrPath("/user/hand/right/output/haptic")}});
+
+        if (!any_ok) {
+            DEBUG_BREAK;
+        }
+    }
+    void RecordCurrentBindings() {
+        if (m_session) {
+            // now we are ready to:
+            XrInteractionProfileState interactionProfile = {XR_TYPE_INTERACTION_PROFILE_STATE, 0, 0};
+            // for each action, what is the binding?
+            OPENXR_CHECK(xrGetCurrentInteractionProfile(m_session, m_handPaths[0], &interactionProfile), "Failed to get profile.");
+            if (interactionProfile.interactionProfile) {
+                XR_TUT_LOG("user/hand/left ActiveProfile " << FromXrPath(interactionProfile.interactionProfile).c_str());
+            }
+            OPENXR_CHECK(xrGetCurrentInteractionProfile(m_session, m_handPaths[1], &interactionProfile), "Failed to get profile.");
+            if (interactionProfile.interactionProfile) {
+                XR_TUT_LOG("user/hand/right ActiveProfile " << FromXrPath(interactionProfile.interactionProfile).c_str());
+            }
+        }
+    }
     void CreateSession() {
         XrSessionCreateInfo sessionCI{XR_TYPE_SESSION_CREATE_INFO};
 
@@ -214,6 +342,33 @@ class OpenXRTutorial {
         sessionCI.systemId = m_systemID;
 
         OPENXR_CHECK(xrCreateSession(m_xrInstance, &sessionCI, &m_session), "Failed to create Session.");
+    }
+    void CreateActionPoses() {
+        auto CreateActionPoseSpace = [this](XrSession session, XrAction xrAction, const char *subaction_path = nullptr) -> XrSpace {
+            XrSpace xrSpace;
+            const XrPosef xrPoseIdentity = {{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+            XrActionSpaceCreateInfo xrActionSpaceCI{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+
+            if (subaction_path != nullptr) {
+                xrActionSpaceCI.subactionPath = CreateXrPath(subaction_path);
+            }
+            xrActionSpaceCI.action = xrAction;
+            xrActionSpaceCI.poseInActionSpace = xrPoseIdentity;
+
+            OPENXR_CHECK(xrCreateActionSpace(session, &xrActionSpaceCI, &xrSpace), "Failed to create ActionSpace");
+
+            return xrSpace;
+        };
+
+        m_handPoseSpace[0] = CreateActionPoseSpace(m_session, m_palmPoseAction, "/user/hand/left");
+        m_handPoseSpace[1] = CreateActionPoseSpace(m_session, m_palmPoseAction, "/user/hand/right");
+    }
+    void AttachActionSet() {
+        XrSessionActionSetsAttachInfo actionSetsAttachInfo{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+        actionSetsAttachInfo.countActionSets = 1;
+        actionSetsAttachInfo.actionSets = &m_actionSet;
+
+        OPENXR_CHECK(xrAttachSessionActionSets(m_session, &actionSetsAttachInfo), "Failed to attach action set");
     }
     void DestroySession() { OPENXR_CHECK(xrDestroySession(m_session), "Failed to destroy Session."); }
     void PollEvents() {
@@ -249,6 +404,7 @@ class OpenXRTutorial {
                         XR_TUT_LOG("XrEventDataInteractionProfileChanged for unknown Session");
                         break;
                     }
+                    RecordCurrentBindings();
                     break;
                 }
                 // Log that there's a reference space change pending.
@@ -649,6 +805,11 @@ class OpenXRTutorial {
         bool sessionActive = (m_sessionState == XR_SESSION_STATE_SYNCHRONIZED || m_sessionState == XR_SESSION_STATE_VISIBLE ||
                               m_sessionState == XR_SESSION_STATE_FOCUSED);
         if (sessionActive && frameState.shouldRender) {
+            // poll actions here because they require a predicted display time, which we've only just obtained.
+            PollActions(frameState.predictedDisplayTime);
+            // Handle the interaction between the user and the 3D blocks.
+            BlockInteraction();
+
             // Render the stereo image and associate one of swapchain images with the XrCompositionLayerProjection structure.
             rendered = RenderLayer(renderLayerInfo);
             if (rendered) {
@@ -664,6 +825,18 @@ class OpenXRTutorial {
         frameEndInfo.layers = renderLayerInfo.layers.data();
         OPENXR_CHECK(xrEndFrame(m_session, &frameEndInfo), "Failed to end the XR Frame.");
     }
+    void PollActions(XrTime predictedDisplayTime) {
+        XrActiveActionSet activeActionSet{};
+        activeActionSet.actionSet = m_actionSet;
+        activeActionSet.subactionPath = XR_NULL_PATH;
+
+        XrActionsSyncInfo actionsSyncInfo{XR_TYPE_ACTIONS_SYNC_INFO};
+        actionsSyncInfo.countActiveActionSets = 1;
+        actionsSyncInfo.activeActionSets = &activeActionSet;
+
+        OPENXR_CHECK(xrSyncActions(m_session, &actionsSyncInfo), "Failed to sync actions");
+    }
+    void BlockInteraction() {}
     bool RenderLayer(RenderLayerInfo &renderLayerInfo) {
         // Locate the views from the view configuration within the (reference) space at the display time.
         std::vector<XrView> views(m_viewConfigurationViews.size(), {XR_TYPE_VIEW});
@@ -837,6 +1010,27 @@ class OpenXRTutorial {
     void *m_vertexShader = nullptr, *m_fragmentShader = nullptr;
 
     void *m_pipeline = nullptr;
+
+    XrActionSet m_actionSet;
+    // An action for grabbing blocks, and an action to change the color of a block.
+    XrAction m_grabCubeAction, m_spawnCubeAction, m_changeColorAction;
+    // The realtime states of these actions.
+    XrActionStateFloat m_grabState[2] = {{XR_TYPE_ACTION_STATE_FLOAT}, {XR_TYPE_ACTION_STATE_FLOAT}};
+    XrActionStateBoolean m_changeColorState[2] = {{XR_TYPE_ACTION_STATE_BOOLEAN}, {XR_TYPE_ACTION_STATE_BOOLEAN}};
+    XrActionStateBoolean m_spawnCubeState = {XR_TYPE_ACTION_STATE_BOOLEAN};
+    // The haptic output action for grabbing cubes.
+    XrAction m_buzzAction;
+    // The current haptic output value for each controller.
+    float m_buzz[2] = {0, 0};
+    // The action for getting the hand or controller position and orientation.
+    XrAction m_palmPoseAction;
+    // The XrPaths for left and right hand hands or controllers.
+    XrPath m_handPaths[2] = {0, 0};
+    // The spaces that represents the two hand poses.
+    XrSpace m_handPoseSpace[2];
+    XrActionStatePose m_handPoseState[2] = {{XR_TYPE_ACTION_STATE_POSE}, {XR_TYPE_ACTION_STATE_POSE}};
+    // The current poses obtained from the XrSpaces.
+    XrPosef m_handPose[2] = {{{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -m_viewHeightM}}, {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -m_viewHeightM}}};
 };
 
 void OpenXRTutorial_Main(GraphicsAPI_Type apiType) {
