@@ -2,6 +2,13 @@
 #include <GraphicsAPI_Vulkan.h>
 #include <OpenXRDebugUtils.h>
 
+#include <algorithm>
+#include <deque>
+#include <random>
+
+static std::uniform_real_distribution<float> pseudorandom_distribution(0, 1.f);
+static std::mt19937 pseudo_random_generator;
+
 // include xr linear algebra for XrVector and XrMatrix classes.
 #include <xr_linear_algebra.h>
 // Declare some useful operators for vectors:
@@ -682,7 +689,7 @@ class OpenXRTutorial {
         m_indexBuffer =
             m_graphicsAPI->CreateBuffer({GraphicsAPI::BufferCreateInfo::Type::INDEX, sizeof(uint32_t), sizeof(cubeIndices), &cubeIndices});
 
-        size_t numberOfCuboids = 2;
+        size_t numberOfCuboids = m_maxBlockCount + 2 + 2;
         m_uniformBuffer_Camera =
             m_graphicsAPI->CreateBuffer({GraphicsAPI::BufferCreateInfo::Type::UNIFORM, 0, sizeof(CameraConstants) * numberOfCuboids, nullptr});
         m_uniformBuffer_Normals = m_graphicsAPI->CreateBuffer({GraphicsAPI::BufferCreateInfo::Type::UNIFORM, 0, sizeof(normals), &normals});
@@ -717,6 +724,31 @@ class OpenXRTutorial {
                              {1, nullptr, GraphicsAPI::DescriptorInfo::Type::BUFFER, GraphicsAPI::DescriptorInfo::Stage::VERTEX},
                              {2, nullptr, GraphicsAPI::DescriptorInfo::Type::BUFFER, GraphicsAPI::DescriptorInfo::Stage::FRAGMENT}};
         m_pipeline = m_graphicsAPI->CreatePipeline(pipelineCI);
+
+        // Create sixty-four cubic blocks, 20cm wide, evenly distributed,
+        // and randomly colored.
+        float scale = 0.2f;
+        // Center the blocks a little way from the origin.
+        XrVector3f center = {0.0f, -0.2f, -0.7f};
+        for (int i = 0; i < 4; i++) {
+            float x = scale * (float(i) - 1.5f) + center.x;
+            for (int j = 0; j < 4; j++) {
+                float y = scale * (float(j) - 1.5f) + center.y;
+                for (int k = 0; k < 4; k++) {
+                    float angleRad = 0;
+                    float z = scale * (float(k) - 1.5f) + center.z;
+                    // No rotation
+                    XrQuaternionf q = {0.0f, 0.0f, 0.0f, 1.0f};
+                    // A random color.
+                    XrVector3f color = {pseudorandom_distribution(pseudo_random_generator), pseudorandom_distribution(pseudo_random_generator),
+                                        pseudorandom_distribution(pseudo_random_generator)};
+                    m_blocks.push_back({{q, {x, y, z}}, {0.095f, 0.095f, 0.095f}, color});
+                    if (m_blocks.size() > m_maxBlockCount) {
+                        m_blocks.pop_front();
+                    }
+                }
+            }
+        }
     }
 
     void DestroyResources() {
@@ -835,8 +867,130 @@ class OpenXRTutorial {
         actionsSyncInfo.activeActionSets = &activeActionSet;
 
         OPENXR_CHECK(xrSyncActions(m_session, &actionsSyncInfo), "Failed to sync actions");
+
+        XrActionStateGetInfo actionStateGI{XR_TYPE_ACTION_STATE_GET_INFO};
+
+        actionStateGI.action = m_palmPoseAction;
+
+        for (int i = 0; i < 2; i++) {
+            actionStateGI.subactionPath = m_handPaths[i];
+            OPENXR_CHECK(xrGetActionStatePose(m_session, &actionStateGI, &m_handPoseState[i]), "Failed to get pose state");
+
+            if (m_handPoseState[i].isActive) {
+                XrSpaceLocation spaceLocation{XR_TYPE_SPACE_LOCATION};
+                auto res = xrLocateSpace(m_handPoseSpace[i], m_localSpace, predictedDisplayTime, &spaceLocation);
+                if (XR_UNQUALIFIED_SUCCESS(res) && (spaceLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0 &&
+                    (spaceLocation.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
+                    m_handPose[i] = spaceLocation.pose;
+                } else {
+                    m_handPoseState[i].isActive = false;
+                }
+            }
+        }
+
+        for (int i = 0; i < 2; i++) {
+            actionStateGI.action = m_grabCubeAction;
+            actionStateGI.subactionPath = m_handPaths[i];
+            OPENXR_CHECK(xrGetActionStateFloat(m_session, &actionStateGI, &m_grabState[i]), "Failed to get Float State of Grab Cube action.");
+        }
+        for (int i = 0; i < 2; i++) {
+            actionStateGI.action = m_changeColorAction;
+            actionStateGI.subactionPath = m_handPaths[i];
+            OPENXR_CHECK(xrGetActionStateBoolean(m_session, &actionStateGI, &m_changeColorState[i]),
+                         "Failed to get Boolean State of Change Color action.");
+        }
+        // The Spawn Cube action has no subActionPath:
+        {
+            actionStateGI.action = m_spawnCubeAction;
+            actionStateGI.subactionPath = 0;
+            OPENXR_CHECK(xrGetActionStateBoolean(m_session, &actionStateGI, &m_spawnCubeState), "Failed to get Boolean State of Spawn Cube action.");
+        }
+
+        for (int i = 0; i < 2; i++) {
+            m_buzz[i] *= 0.5f;
+            if (m_buzz[i] < 0.01f) m_buzz[i] = 0.0f;
+            XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+            vibration.amplitude = m_buzz[i];
+            vibration.duration = XR_MIN_HAPTIC_DURATION;
+            vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+
+            XrHapticActionInfo hapticActionInfo{XR_TYPE_HAPTIC_ACTION_INFO};
+            hapticActionInfo.action = m_buzzAction;
+            hapticActionInfo.subactionPath = m_handPaths[i];
+            OPENXR_CHECK(xrApplyHapticFeedback(m_session, &hapticActionInfo, (XrHapticBaseHeader *)&vibration), "Failed to apply haptic feedback.");
+        }
     }
-    void BlockInteraction() {}
+    // Helper function to snap a 3D position to the nearest 10cm
+    static XrVector3f FixPosition(XrVector3f pos) {
+        int x = int(std::nearbyint(pos.x * 10.f));
+        int y = int(std::nearbyint(pos.y * 10.f));
+        int z = int(std::nearbyint(pos.z * 10.f));
+        pos.x = float(x) / 10.f;
+        pos.y = float(y) / 10.f;
+        pos.z = float(z) / 10.f;
+        return pos;
+    }
+    // Handle the interaction between the user's hands, the grab action, and the 3D blocks.
+    void BlockInteraction() {
+        // For each hand:
+        for (int i = 0; i < 2; i++) {
+            float nearest = 1.0f;
+            // If not currently holding a block:
+            if (m_grabbedBlock[i] == -1) {
+                m_nearBlock[i] = -1;
+                // Only if the pose was detected this frame:
+                if (m_handPoseState[i].isActive) {
+                    // For each block:
+                    for (int j = 0; j < m_blocks.size(); j++) {
+                        auto block = m_blocks[j];
+                        // How far is it from the hand to this block?
+                        XrVector3f diff = block.pose.position - m_handPose[i].position;
+                        float distance = std::max(fabs(diff.x), std::max(fabs(diff.y), fabs(diff.z)));
+                        if (distance < 0.05f && distance < nearest) {
+                            m_nearBlock[i] = j;
+                            nearest = distance;
+                        }
+                    }
+                }
+                if (m_nearBlock[i] != -1) {
+                    if (m_grabState[i].isActive && m_grabState[i].currentState > 0.5f) {
+                        m_grabbedBlock[i] = m_nearBlock[i];
+                        m_buzz[i] = 1.0f;
+                    } else if (m_changeColorState[i].isActive == XR_TRUE && m_changeColorState[i].currentState == XR_FALSE &&
+                               m_changeColorState[i].changedSinceLastSync == XR_TRUE) {
+                        auto &thisBlock = m_blocks[m_nearBlock[i]];
+                        XrVector3f color = {pseudorandom_distribution(pseudo_random_generator), pseudorandom_distribution(pseudo_random_generator),
+                                            pseudorandom_distribution(pseudo_random_generator)};
+                        thisBlock.color = color;
+                    }
+                } else {
+                    // right hand not near a block?
+                    // i = 1 means sub action path /user/hand/right
+                    if (i == 1 && m_spawnCubeState.isActive == XR_TRUE && m_spawnCubeState.currentState == XR_FALSE &&
+                        m_spawnCubeState.changedSinceLastSync == XR_TRUE) {
+                        XrQuaternionf q = {0.0f, 0.0f, 0.0f, 1.0f};
+                        XrVector3f color = {pseudorandom_distribution(pseudo_random_generator), pseudorandom_distribution(pseudo_random_generator),
+                                            pseudorandom_distribution(pseudo_random_generator)};
+                        m_blocks.push_back({{q, FixPosition(m_handPose[i].position)}, {0.095f, 0.095f, 0.095f}, color});
+                        while (m_blocks.size() > m_maxBlockCount) {
+                            m_blocks.pop_front();
+                        }
+                    }
+                }
+            } else {
+                m_nearBlock[i] = m_grabbedBlock[i];
+                if (m_handPoseState[i].isActive) {
+                    m_blocks[m_grabbedBlock[i]].pose.position = m_handPose[i].position;
+                    m_blocks[m_grabbedBlock[i]].pose.orientation = m_handPose[i].orientation;
+                }
+                if (!m_grabState[i].isActive || m_grabState[i].currentState < 0.5f) {
+                    m_blocks[m_grabbedBlock[i]].pose.position = FixPosition(m_blocks[m_grabbedBlock[i]].pose.position);
+                    m_grabbedBlock[i] = -1;
+                    m_buzz[i] = 0.2f;
+                }
+            }
+        }
+    }
     bool RenderLayer(RenderLayerInfo &renderLayerInfo) {
         // Locate the views from the view configuration within the (reference) space at the display time.
         std::vector<XrView> views(m_viewConfigurationViews.size(), {XR_TYPE_VIEW});
@@ -931,6 +1085,19 @@ class OpenXRTutorial {
             // Draw a "table".
             RenderCuboid({{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, -m_viewHeightM + 0.9f, -0.7f}}, {1.0f, 0.2f, 1.0f}, {0.6f, 0.6f, 0.4f});
 
+            // Draw some blocks at the controller positions:
+            for (int j = 0; j < 2; j++) {
+                if (m_handPoseState[j].isActive) {
+                    RenderCuboid(m_handPose[j], {0.02f, 0.04f, 0.10f}, {1.f, 1.f, 1.f});
+                }
+            }
+            for (int j = 0; j < m_blocks.size(); j++) {
+                auto &thisBlock = m_blocks[j];
+                XrVector3f sc = thisBlock.scale;
+                if (j == m_nearBlock[0] || j == m_nearBlock[1]) sc = thisBlock.scale * 1.05f;
+                RenderCuboid(thisBlock.pose, sc, thisBlock.color);
+            }
+
             m_graphicsAPI->EndRendering();
 
             // Give the swapchain image back to OpenXR, allowing the compositor to use the image.
@@ -1010,6 +1177,21 @@ class OpenXRTutorial {
     void *m_vertexShader = nullptr, *m_fragmentShader = nullptr;
 
     void *m_pipeline = nullptr;
+
+    // An instance of a 3d colored block.
+    struct Block {
+        XrPosef pose;
+        XrVector3f scale;
+        XrVector3f color;
+    };
+    // The list of block instances.
+    std::deque<Block> m_blocks;
+    // Don't let too many m_blocks get created.
+    const size_t m_maxBlockCount = 100;
+    // Which block, if any, is being held by each of the user's hands or controllers.
+    int m_grabbedBlock[2] = {-1, -1};
+    // Which block, if any, is nearby to each hand or controller.
+    int m_nearBlock[2] = {-1, -1};
 
     XrActionSet m_actionSet;
     // An action for grabbing blocks, and an action to change the color of a block.
