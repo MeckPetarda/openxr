@@ -33,6 +33,7 @@ class OpenXRTutorial {
 
         GetInstanceProperties();
         GetSystemID();
+        GetPassthroughSupport();
         CreateActionSet();
         SuggestBindings();
 
@@ -127,6 +128,9 @@ class OpenXRTutorial {
         // Ensure m_apiType is already defined when we call this line.
         m_instanceExtensions.push_back(GetGraphicsAPIInstanceExtensionString(m_apiType));
 
+        m_instanceExtensions.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
+        m_instanceExtensions.push_back(XR_FB_TRIANGLE_MESH_EXTENSION_NAME);
+
         // Get all the API Layers from the OpenXR runtime.
         uint32_t apiLayerCount = 0;
         std::vector<XrApiLayerProperties> apiLayerProperties;
@@ -216,6 +220,24 @@ class OpenXRTutorial {
 
         // Get the System's properties for some general information about the hardware and the vendor.
         OPENXR_CHECK(xrGetSystemProperties(m_xrInstance, m_systemID, &m_systemProperties), "Failed to get SystemProperties.");
+    }
+    void GetPassthroughSupport() {
+        XrSystemPassthroughProperties2FB passthroughSystemProperties{XR_TYPE_SYSTEM_PASSTHROUGH_PROPERTIES2_FB};
+        XrSystemProperties systemProperties{XR_TYPE_SYSTEM_PROPERTIES, &passthroughSystemProperties};
+
+        XrSystemGetInfo systemGetInfo{XR_TYPE_SYSTEM_GET_INFO};
+        systemGetInfo.formFactor = XrFormFactor::XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+        XrSystemId systemId = XR_NULL_SYSTEM_ID;
+        xrGetSystem(m_xrInstance, &systemGetInfo, &systemId);
+        xrGetSystemProperties(m_xrInstance, systemId, &systemProperties);
+
+       if (( passthroughSystemProperties.capabilities & XR_PASSTHROUGH_CAPABILITY_BIT_FB) == XR_PASSTHROUGH_CAPABILITY_BIT_FB ){
+          m_supportsPassthrough = true;
+       }
+       else {
+           std::cerr << "Device does not support passthrough" << std::endl;
+       };
     }
     XrPath CreateXrPath(const char *path_string) {
         XrPath xrPath;
@@ -797,6 +819,8 @@ class OpenXRTutorial {
         for (const XrEnvironmentBlendMode &environmentBlendMode : m_applicationEnvironmentBlendModes) {
             if (std::find(m_environmentBlendModes.begin(), m_environmentBlendModes.end(), environmentBlendMode) != m_environmentBlendModes.end()) {
                 m_environmentBlendMode = environmentBlendMode;
+
+                XR_TUT_LOG("Found compatible blend mode, using :" << environmentBlendMode)
                 break;
             }
         }
@@ -1054,13 +1078,19 @@ class OpenXRTutorial {
             // Rendering code to clear the color and depth image views.
             m_graphicsAPI->BeginRendering();
 
-            if (m_environmentBlendMode == XR_ENVIRONMENT_BLEND_MODE_OPAQUE) {
-                // VR mode use a background color.
-                m_graphicsAPI->ClearColor(colorSwapchainInfo.imageViews[colorImageIndex], 0.17f, 0.17f, 0.17f, 1.00f);
-            } else {
-                // In AR mode make the background color black.
-                m_graphicsAPI->ClearColor(colorSwapchainInfo.imageViews[colorImageIndex], 0.00f, 0.00f, 0.00f, 1.00f);
+            switch (m_environmentBlendMode) {
+                case XR_ENVIRONMENT_BLEND_MODE_OPAQUE:
+                    m_graphicsAPI->ClearColor(colorSwapchainInfo.imageViews[colorImageIndex], 0.17f, 0.17f, 0.17f, 1.00f);
+                    break;
+                case XR_ENVIRONMENT_BLEND_MODE_ADDITIVE:
+                    m_graphicsAPI->ClearColor(colorSwapchainInfo.imageViews[colorImageIndex], 0.00f, 0.00f, 0.00f, 1.00f);
+                    break;
+                case XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND:
+                    m_graphicsAPI->ClearColor(colorSwapchainInfo.imageViews[colorImageIndex], 0.00f, 0.00f, 0.00f, 0.00);
+                    break;
+                default: XR_TUT_LOG_ERROR("Unexpected blend mode value: "<< m_environmentBlendMode);
             }
+
             m_graphicsAPI->ClearDepth(depthSwapchainInfo.imageViews[depthImageIndex], 1.0f);
 
             m_graphicsAPI->SetRenderAttachments(&colorSwapchainInfo.imageViews[colorImageIndex], 1, depthSwapchainInfo.imageViews[depthImageIndex],
@@ -1138,6 +1168,8 @@ class OpenXRTutorial {
     bool m_applicationRunning = true;
     bool m_sessionRunning = false;
 
+    bool m_supportsPassthrough = false;
+
     std::vector<XrViewConfigurationType> m_applicationViewConfigurations = {XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,
                                                                             XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO};
     std::vector<XrViewConfigurationType> m_viewConfigurations;
@@ -1152,7 +1184,7 @@ class OpenXRTutorial {
     std::vector<SwapchainInfo> m_colorSwapchainInfos = {};
     std::vector<SwapchainInfo> m_depthSwapchainInfos = {};
 
-    std::vector<XrEnvironmentBlendMode> m_applicationEnvironmentBlendModes = {XR_ENVIRONMENT_BLEND_MODE_ADDITIVE};
+    std::vector<XrEnvironmentBlendMode> m_applicationEnvironmentBlendModes = {XR_ENVIRONMENT_BLEND_MODE_ADDITIVE, XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND};
     std::vector<XrEnvironmentBlendMode> m_environmentBlendModes = {};
     XrEnvironmentBlendMode m_environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_MAX_ENUM;
 
